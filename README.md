@@ -21,8 +21,8 @@ $ poetry install
 
 ## Usage:
 
-Because the code doesn't handle *sudo* at all, so you'll need to ensure your user
-can write to the disk devices you need first:
+Because the code doesn't handle *sudo* at all, you'll need to ensure your user
+has permission to write to the disk devices first:
 
 ```
 $ sudo chmod o+rw /dev/zvol/rpool/disktests1 /dev/zvol/rpool/disktests2
