@@ -2,6 +2,8 @@
 
 Similar to badblocks, except writes to multiple disks at once
 
+![Multi Disk Tester Screenshot](https://github.com/justinclift/multi_disk_tester/raw/master/pics/2024.08.19-screenshot_v0.0.1.png "Multi Disk Tester Screenshot")
+
 ## Installation
 
 As this is written in Python, getting the dependencies installed is a bit
