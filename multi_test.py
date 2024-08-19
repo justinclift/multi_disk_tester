@@ -254,7 +254,7 @@ def main():
                         maybe_finished = False
                         progress.update(task_id=task, completed=DEVICE_PROGRESS[idx], refresh=True)
                     else:
-                        progress.update(task_id=task, completed=True, refresh=True)
+                        progress.update(task_id=task, completed=100, refresh=True)
 
                 if maybe_finished is True:
                     finished = True
