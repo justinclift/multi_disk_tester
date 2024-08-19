@@ -191,7 +191,7 @@ def main():
     # Get the device name(s) to test
     parser = argparse.ArgumentParser(description="Badblocks, but in Python and able"
                                                  " to test multiple devices simultaneously")
-    parser.add_argument("-d", "--devices", help="device to test (multiple occurrances is allowed", type=pathlib.Path,
+    parser.add_argument("-d", "--devices", help="device to test (multiple occurrences is allowed)", type=pathlib.Path,
                         action="append", required=True)
     args = parser.parse_args()
 
