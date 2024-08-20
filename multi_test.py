@@ -1,22 +1,58 @@
 #!/usr/bin/env python3
 
+"""
+A cli to destructively test attached disks, using the same patterns as
+badblocks.
+
+Unlike badblocks though, this reads and writes to the chosen disks in
+parallel.
+"""
+
+
+# TODO: Perhaps present a list of disks for the user to choose from, if they've not passed anything on the command line?
+#  * `sudo lshw -c disk -json` returns only the physical disks (as json)
+#     lshw isn't part of the standard OS install though, so probably isn't the best choice
+#  * `sudo lsblk -J` returns both physical and virtual disks (as json)
+#  * `sudo lsblk -o tran,name,type,size,vendor,model,label,rota,phy-sec,log-sec -J` returns selected fields
+#    * Can likely be told to return only the info desired
+#    * Is part of util-linux, so comes with the default OS install
+
 import mmap
 import os
 import subprocess
 import argparse
 import pathlib
+import sys
 import time
 from multiprocessing import Pool, Array
 
 from rich.progress import Progress
 
 CMD_BLOCKDEV="/usr/sbin/blockdev"
+CMD_LSBLK="/usr/bin/lsblk"
 DEBUG = False
 
 DEVICE_LIST = []
 DEVICE_PROGRESS = Array('I', [])
 DEVICE_STATUS = Array('B', [])
 TASK_LIST = Array('I', [])
+
+
+def get_disk_list():
+    try:
+        lsblk_output = subprocess.check_output(
+            [CMD_LSBLK, "-o", "tran,name,type,size,vendor,model,label,rota,phy-sec,log-sec", "-J"]).strip()
+    except subprocess.CalledProcessError:
+        print(f"Couldn't run lsblk.  Aborting!")
+        return False
+    except FileNotFoundError as e:
+        print(f"lsblk doesn't seem to exist at {CMD_LSBLK}")
+        return False
+    except Exception as e:
+        return False
+
+    print(lsblk_output)
+    return lsblk_output
 
 
 def test_disk(device):
@@ -192,12 +228,26 @@ def main():
     parser = argparse.ArgumentParser(description="Badblocks, but in Python and able"
                                                  " to test multiple devices simultaneously")
     parser.add_argument("-d", "--devices", help="device to test (multiple occurrences is allowed)", type=pathlib.Path,
-                        action="append", required=True)
+                        action="append", required=False)
     args = parser.parse_args()
+
+    # Determine the number of devices passed on the command line
+    num_drives = 0
+    if args.devices:
+        num_drives = len(args.devices)
+
+    # TODO: Require running as super-user
+
+    # TODO: Check if no devices were provided on the command line, and if so then present a checkbox menu for selecting
+    if not args.devices:
+        disk_list = get_disk_list()
+
+    sys.exit(1)
+
+    # TODO: Check if any of the selected devices are currently mounted, and if so then handle it.  Refuse to proceed?
 
     with Progress() as progress:
         # Size the progress information arrays appropriately
-        num_drives = len(args.devices)
         DEVICE_PROGRESS = Array('I', range(num_drives))
         DEVICE_STATUS = Array('B', range(num_drives))
         TASK_LIST = Array('I', range(num_drives))
