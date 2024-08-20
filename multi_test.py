@@ -24,13 +24,17 @@ import argparse
 import pathlib
 import sys
 import time
+import rapidjson
 from multiprocessing import Pool, Array
 
+from rich import print
+from rich.panel import Panel
 from rich.progress import Progress
 
 CMD_BLOCKDEV="/usr/sbin/blockdev"
 CMD_LSBLK="/usr/bin/lsblk"
 DEBUG = False
+VERSION = "0.0.2"
 
 DEVICE_LIST = []
 DEVICE_PROGRESS = Array('I', [])
@@ -38,7 +42,7 @@ DEVICE_STATUS = Array('B', [])
 TASK_LIST = Array('I', [])
 
 
-def get_disk_list():
+def get_drive_list():
     try:
         lsblk_output = subprocess.check_output(
             [CMD_LSBLK, "-o", "tran,name,type,size,vendor,model,label,rota,phy-sec,log-sec", "-J"]).strip()
@@ -51,8 +55,17 @@ def get_disk_list():
     except Exception as e:
         return False
 
-    print(lsblk_output)
-    return lsblk_output
+    drives_json = rapidjson.loads(lsblk_output)
+    drives = []
+    for drive in drives_json["blockdevices"]:
+        if drive["type"]:
+            drives.append({"name": drive['name'], "size": drive['size'], "vendor": drive['vendor'],
+                           "model": drive['model']})
+            # print(f"{drive['name']} ({drive['size']}) | Vendor: {drive['vendor']}, Model {drive['model']} ")
+        # else:
+        #     print(f"{drive['name']} has no type")
+
+    return drives
 
 
 def test_disk(device):
@@ -222,7 +235,7 @@ def main():
     global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS, TASK_LIST
 
     # Output program info
-    print(f"Destructive disk testing utility v0.0.1")
+    print(f"Destructive disk testing utility v{VERSION}")
 
     # Get the device name(s) to test
     parser = argparse.ArgumentParser(description="Badblocks, but in Python and able"
@@ -231,18 +244,27 @@ def main():
                         action="append", required=False)
     args = parser.parse_args()
 
-    # Determine the number of devices passed on the command line
-    num_drives = 0
-    if args.devices:
-        num_drives = len(args.devices)
-
     # TODO: Require running as super-user
 
     # TODO: Check if no devices were provided on the command line, and if so then present a checkbox menu for selecting
-    if not args.devices:
-        disk_list = get_disk_list()
+    # Determine the number of devices passed on the command line
+    if args.devices:
+        num_drives = len(args.devices)
+    else:
+        drive_list = get_drive_list()
+        print(drive_list)
+        choices = ""
+        for drive in drive_list:
+            if choices != "":
+                choices += "\n"
+            choices += f"[ ] {drive['name']}"
 
-    sys.exit(1)
+        # TODO: Present the list of drives to the user
+        print(Panel.fit(choices, title="Choose the drives to destructively test"))
+
+        # TODO: How to handle keyboard input? ie: cursor up/down, space to select, and probably enter to continue?
+
+        sys.exit(1)
 
     # TODO: Check if any of the selected devices are currently mounted, and if so then handle it.  Refuse to proceed?
 
