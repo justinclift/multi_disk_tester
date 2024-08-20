@@ -28,8 +28,9 @@ import rapidjson
 from multiprocessing import Pool, Array
 
 from rich import print
-from rich.panel import Panel
+from rich.console import Console
 from rich.progress import Progress
+from rich.table import Table
 
 CMD_BLOCKDEV="/usr/sbin/blockdev"
 CMD_LSBLK="/usr/bin/lsblk"
@@ -246,21 +247,28 @@ def main():
 
     # TODO: Require running as super-user
 
-    # TODO: Check if no devices were provided on the command line, and if so then present a checkbox menu for selecting
+    console = Console()
+
     # Determine the number of devices passed on the command line
     if args.devices:
         num_drives = len(args.devices)
     else:
-        drive_list = get_drive_list()
-        print(drive_list)
-        choices = ""
-        for drive in drive_list:
-            if choices != "":
-                choices += "\n"
-            choices += f"[ ] {drive['name']}"
+        # Present the list of drives to the user
+        choice_table = Table(title="Choose the drives to destructively test",
+                             caption="Use up/down arrows. SPACE to select. ENTER to continue")
+        choice_table.add_column("Test?")
+        choice_table.add_column("Name")
+        choice_table.add_column("Size")
+        choice_table.add_column("Vendor")
+        choice_table.add_column("Model")
 
-        # TODO: Present the list of drives to the user
-        print(Panel.fit(choices, title="Choose the drives to destructively test"))
+        drive_list = get_drive_list()
+        for drive in drive_list:
+            vendor = "Unknown" if drive["vendor"] is None else drive["vendor"].strip()
+            model = "Unknown" if drive["model"] is None else drive["model"].strip()
+            choice_table.add_row("[ ]", drive["name"], drive["size"], vendor, model)
+
+        console.print(choice_table)
 
         # TODO: How to handle keyboard input? ie: cursor up/down, space to select, and probably enter to continue?
 
