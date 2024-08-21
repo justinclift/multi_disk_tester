@@ -25,10 +25,12 @@ import pathlib
 import sys
 import time
 import rapidjson
+from datetime import datetime
 from multiprocessing import Pool, Array
 
 from rich import print
 from rich.console import Console
+from rich.layout import Layout
 from rich.progress import Progress
 from rich.table import Table
 
@@ -43,10 +45,10 @@ DEVICE_STATUS = Array('B', [])
 TASK_LIST = Array('I', [])
 
 
-def get_drive_list():
+def get_drive_list(selected_devices=None):
     try:
         lsblk_output = subprocess.check_output(
-            [CMD_LSBLK, "-o", "tran,name,type,size,vendor,model,label,rota,phy-sec,log-sec", "-J"]).strip()
+            [CMD_LSBLK, "-o", "name,type,size,vendor,model", "-J"]).strip()
     except subprocess.CalledProcessError:
         print(f"Couldn't run lsblk.  Aborting!")
         return False
@@ -59,13 +61,20 @@ def get_drive_list():
     drives_json = rapidjson.loads(lsblk_output)
     drives = []
     for drive in drives_json["blockdevices"]:
-        if drive["type"]:
+        if drive["type"] == "disk":
+            # Check if the drive was selected on the command line
+            # TODO: This will likely need updating to understand things like ZFS pool/volume == /dev/zd[something]
+            # print(f"Checking drive {drive['name']} against {selected_devices}")
+            selected = False
+            if selected_devices:
+                for sel in selected_devices:
+                    friendly_name = str(sel).split("/")[-1:][0]
+                    # print(friendly_name)
+                    if drive["name"] == friendly_name:
+                        # print(f"setting 'selected' to True")
+                        selected = True
             drives.append({"name": drive['name'], "size": drive['size'], "vendor": drive['vendor'],
-                           "model": drive['model']})
-            # print(f"{drive['name']} ({drive['size']}) | Vendor: {drive['vendor']}, Model {drive['model']} ")
-        # else:
-        #     print(f"{drive['name']} has no type")
-
+                           "model": drive['model'], "selected": selected})
     return drives
 
 
@@ -84,7 +93,7 @@ def test_disk(device):
 
     if found is False:
         print(f"{device} not found in DEVICE_LIST.  Aborting.")
-        return
+        return False
 
     # Get the total size of the device
     try:
@@ -93,6 +102,7 @@ def test_disk(device):
         print(f"Couldn't run blockdev on {device}.  Aborting!")
         return False
     except Exception as e:
+        print("Something went wrong when trying to run blockdev")
         return False
 
     if DEBUG:
@@ -137,21 +147,25 @@ def test_disk(device):
         # Write to the device
         write_status = False
         try:
-            write_status = write_disk(list_element, file_handle, physical_block_size, num_blocks_in_device, test_array, test_byte)
+            write_status = write_disk(list_element, file_handle, physical_block_size, num_blocks_in_device,
+                                      test_array, test_byte)
         except Exception as e:
-            break
+            return False
         if not write_status:
             print(f"Writing {test_byte} to {device} failed!")
+            return False
 
         # Verify writing to the device worked
         # TODO: This feels like a dodgy way to check the verification worked?
-        verify_status = False
-        try:
-            verify_status = verify_disk(list_element, file_handle, physical_block_size, num_blocks_in_device, test_array, test_byte)
-        except:
-            print(f"Reading from '{device}' failed!")
-            verify_succeeded = False
-            break
+        # verify_status = False
+        # try:
+        # TODO: Put this back into a try block when I have some idea about the errors that can returned
+        verify_status = verify_disk(list_element, file_handle, physical_block_size, num_blocks_in_device,
+                                    test_array, test_byte)
+        # except:
+        #     print(f"Reading from '{device}' failed!")
+        #     verify_succeeded = False
+        #     break
         if not verify_status:
             verify_succeeded = False
             print(f"Verifying {test_byte} on {device} failed!")
@@ -165,7 +179,8 @@ def test_disk(device):
     return True
 
 
-def write_disk(list_element, file_to_be_read, physical_block_size, num_blocks_in_device, array_to_write, test_byte):
+def write_disk(list_element, file_to_be_read, physical_block_size, num_blocks_in_device,
+               array_to_write, test_byte) -> bool:
     global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS
     if test_byte == bytearray.fromhex('aa'):
         DEVICE_STATUS[list_element] = 1
@@ -200,7 +215,7 @@ def write_disk(list_element, file_to_be_read, physical_block_size, num_blocks_in
 
 
 def verify_disk(list_element, file_to_be_read, physical_block_size, num_blocks_in_device, comparison_array,
-                expected_byte):
+                expected_byte) -> bool:
     global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS
     if expected_byte == bytearray.fromhex('aa'):
         DEVICE_STATUS[list_element] = 2
@@ -235,9 +250,6 @@ def verify_disk(list_element, file_to_be_read, physical_block_size, num_blocks_i
 def main():
     global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS, TASK_LIST
 
-    # Output program info
-    print(f"Destructive disk testing utility v{VERSION}")
-
     # Get the device name(s) to test
     parser = argparse.ArgumentParser(description="Badblocks, but in Python and able"
                                                  " to test multiple devices simultaneously")
@@ -249,52 +261,85 @@ def main():
 
     console = Console()
 
+    # Output program info
+    print()
+
+    layout = Layout(name="root")
+    layout.split(
+        Layout(name="header", size=3),
+        Layout(name="main", ratio=1),
+    )
+    layout["main"].split_row(
+        Layout(name="left"),
+        Layout(name="right")
+    )
+
+    grid = Table.grid(expand=True)
+    grid.add_column(justify="center", ratio=1)
+    grid.add_row(f"Destructive disk testing utility v{VERSION}")
+    grid.add_row("Started: " + datetime.now().ctime().replace(":", "[blink]:[/]"))
+    # TODO: Add or complete a "Finished" line when the program finishes
+    # grid.add_row("Finished: " + datetime.now().ctime().replace(":", "[blink]:[/]"))
+    layout["header"].update(grid)
+
+    # TODO: Should we show the list of drives even if passed a list of command line options?
+    #       Yes, if we can make sure things like zvols show their pool/volume name properly
+
+    # Present the list of drives to the user
+    choice_table = Table(title="Choose the drives to destructively test",
+                         caption="Use up/down arrows. SPACE to select. ENTER to continue")
+    choice_table.add_column("Test?")
+    choice_table.add_column("Name")
+    choice_table.add_column("Size")
+    choice_table.add_column("Vendor")
+    choice_table.add_column("Model")
+
     # Determine the number of devices passed on the command line
+    num_drives = 0
     if args.devices:
         num_drives = len(args.devices)
+        drive_list = get_drive_list(args.devices)
     else:
-        # Present the list of drives to the user
-        choice_table = Table(title="Choose the drives to destructively test",
-                             caption="Use up/down arrows. SPACE to select. ENTER to continue")
-        choice_table.add_column("Test?")
-        choice_table.add_column("Name")
-        choice_table.add_column("Size")
-        choice_table.add_column("Vendor")
-        choice_table.add_column("Model")
-
         drive_list = get_drive_list()
-        for drive in drive_list:
-            vendor = "Unknown" if drive["vendor"] is None else drive["vendor"].strip()
-            model = "Unknown" if drive["model"] is None else drive["model"].strip()
-            choice_table.add_row("[ ]", drive["name"], drive["size"], vendor, model)
-
-        console.print(choice_table)
-
+        print(layout)
         # TODO: How to handle keyboard input? ie: cursor up/down, space to select, and probably enter to continue?
 
         sys.exit(1)
 
+    for drive in drive_list:
+        vendor = "Unknown" if drive["vendor"] is None else drive["vendor"].strip()
+        model = "Unknown" if drive["model"] is None else drive["model"].strip()
+        selection = "\[x]" if drive["selected"] else "\[ ]"
+        choice_table.add_row(selection, drive["name"], drive["size"], vendor, model)
+
+    layout["left"].update(choice_table)
+
     # TODO: Check if any of the selected devices are currently mounted, and if so then handle it.  Refuse to proceed?
 
-    with Progress() as progress:
-        # Size the progress information arrays appropriately
-        DEVICE_PROGRESS = Array('I', range(num_drives))
-        DEVICE_STATUS = Array('B', range(num_drives))
-        TASK_LIST = Array('I', range(num_drives))
+    progress = Progress()
+    layout["right"].update(progress)
 
-        cnt = 0
-        for device in args.devices:
-            DEVICE_LIST.append(device)
-            friendly_name = str(device).split("/")[-1:][0]
-            TASK_LIST[cnt] = progress.add_task(f"[cyan]{friendly_name} writing...", total=100)
-            cnt += 1
+    # Size the progress information arrays appropriately
+    DEVICE_PROGRESS = Array('I', range(num_drives))
+    DEVICE_STATUS = Array('B', range(num_drives))
+    TASK_LIST = Array('I', range(num_drives))
 
-        # Launch the background drive read/verify tasks
-        with Pool(processes=len(DEVICE_LIST)) as pool:
-            pool.imap(test_disk, DEVICE_LIST)
+    cnt = 0
+    for device in args.devices:
+        DEVICE_LIST.append(device)
+        friendly_name = str(device).split("/")[-1:][0]
+        TASK_LIST[cnt] = progress.add_task(f"[cyan]{friendly_name} writing...", total=100)
+        cnt += 1
 
-            # This main process just reports the results until the tasks are finished
-            finished = False
+    # Launch the background drive read/verify tasks
+    with Pool(processes=len(DEVICE_LIST)) as pool:
+        pool.imap(test_disk, DEVICE_LIST)
+
+        # This main process just reports the results until the tasks are finished
+        finished = False
+        from rich.live import Live
+
+        with Live(layout, refresh_per_second=10, screen=False):
             while not finished:
                 time.sleep(0.1)
 
@@ -330,6 +375,8 @@ def main():
                         progress.update(task_id=task, description=f"[cyan]{friendly_name} unknown?")
 
                     # Determine if any tasks are still progressing
+                    # TODO: The individual tasks have a boolean "finished" attribute which seems like it should be
+                    #       better for this
                     if DEVICE_STATUS[idx] < 20:
                         maybe_finished = False
                         progress.update(task_id=task, completed=DEVICE_PROGRESS[idx], refresh=True)
