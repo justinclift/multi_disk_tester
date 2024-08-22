@@ -1,24 +1,14 @@
 #!/usr/bin/env python3
 
 """
-A cli to destructively test attached disks, using the same patterns as
-badblocks.
+A cli to destructively test attached disks, using the same patterns as badblocks.
 
-Unlike badblocks though, this reads and writes to the chosen disks in
-parallel.
+Unlike badblocks though, this reads and writes to the chosen disks in parallel.
 """
-
-
-# TODO: Perhaps present a list of disks for the user to choose from, if they've not passed anything on the command line?
-#  * `sudo lshw -c disk -json` returns only the physical disks (as json)
-#     lshw isn't part of the standard OS install though, so probably isn't the best choice
-#  * `sudo lsblk -J` returns both physical and virtual disks (as json)
-#  * `sudo lsblk -o tran,name,type,size,vendor,model,label,rota,phy-sec,log-sec -J` returns selected fields
-#    * Can likely be told to return only the info desired
-#    * Is part of util-linux, so comes with the default OS install
 
 import mmap
 import os
+from stat import S_ISLNK
 import subprocess
 import argparse
 import pathlib
@@ -29,7 +19,6 @@ from datetime import datetime
 from multiprocessing import Pool, Array
 
 from rich import print
-from rich.console import Console
 from rich.layout import Layout
 from rich.progress import Progress
 from rich.table import Table
@@ -52,10 +41,10 @@ def get_drive_list(selected_devices=None) -> list:
             [CMD_LSBLK, "-o", "name,type,size,vendor,model", "-J"]
         ).strip()
     except subprocess.CalledProcessError:
-        print(f"Couldn't run lsblk.  Aborting!")
+        print("Couldn't run lsblk.  Aborting!")
         return False
-    except FileNotFoundError as e:
-        print(f"lsblk doesn't seem to exist at {CMD_LSBLK}")
+    except FileNotFoundError:
+        print("lsblk doesn't seem to exist at {CMD_LSBLK}")
         return False
 
     drives_json = rapidjson.loads(lsblk_output)
@@ -63,25 +52,27 @@ def get_drive_list(selected_devices=None) -> list:
     # Get the zfs volume list
     zfs_vol_list = get_zfs_volumes()
 
-    sys.exit(1)
-
     drives = []
     for drive in drives_json["blockdevices"]:
         if drive["type"] == "disk":
             # Check if the drive was selected on the command line
-            # TODO: This will likely need updating to understand things like ZFS pool/volume == /dev/zd[something]
-            # print(f"Checking drive {drive['name']} against {selected_devices}")
             selected = False
             if selected_devices:
                 for sel in selected_devices:
                     friendly_name = str(sel).split("/")[-1:][0]
-                    # print(friendly_name)
                     if drive["name"] == friendly_name:
-                        # print(f"setting 'selected' to True")
                         selected = True
+
+            # If the name matches a zfs volume device, then we use pool/dataset for the name instead
+            drive_name = drive["name"]
+            for zfs_volume in zfs_vol_list:
+                if zfs_volume["device_name"] == drive["name"]:
+                    drive_name = zfs_volume["name"]
+
+            # Add the drive to the selection display
             drives.append(
                 {
-                    "name": drive["name"],
+                    "name": drive_name,
                     "size": drive["size"],
                     "vendor": drive["vendor"],
                     "model": drive["model"],
@@ -93,13 +84,13 @@ def get_drive_list(selected_devices=None) -> list:
 
 def get_zfs_volumes() -> list:
     """
-    If zfs is present, then this function returns a list of the zfs block devices along with some useful meta data.
+    If zfs is present, then this function returns a list of the zfs block devices along with some useful metadata
     :return:
     """
 
     # Check if the zfs command line utility is present
     try:
-        zfs_stat = os.stat(CMD_ZFS, follow_symlinks=True)
+        os.stat(CMD_ZFS, follow_symlinks=True)
     except FileNotFoundError:
         # ZFS doesn't seem to be installed
         if DEBUG:
@@ -115,7 +106,7 @@ def get_zfs_volumes() -> list:
         )
         zfs_list_datasets = cmd_output.stdout.readlines()
     except subprocess.CalledProcessError:
-        print(f"Calling zfs list failed.  Aborting!")
+        print("Calling zfs list failed.  Aborting!")
         return []
     zfs_datasets = []
     for line in zfs_list_datasets:
@@ -135,7 +126,7 @@ def get_zfs_volumes() -> list:
             )
             zfs_list_volumes.append(cmd_output.stdout.read())
         except subprocess.CalledProcessError:
-            print(f"Calling zfs list failed.  Aborting!")
+            print("Calling zfs list failed.  Aborting!")
             return []
     for volume in zfs_list_volumes:
         z = volume.split()
@@ -144,14 +135,29 @@ def get_zfs_volumes() -> list:
             pool = z[0].split("/")[0]
             dataset_path = z[0].removeprefix(pool + "/")
 
-            # TODO: Retrieve the underlying storage device name.  ie /dev/zd0
+            # Retrieve the underlying storage device name.  ie "/dev/zd0" as "zd0"
+            zvol_path = os.path.join("/", "dev", "zvol", z[0])
+            mode = os.stat(zvol_path, follow_symlinks=False).st_mode
+            device_name = ""
+            if S_ISLNK(mode):
+                device_name = os.path.basename(os.readlink(zvol_path))
+            else:
+                print(
+                    f"Something went wrong when attempting to retrieve info for {zvol_path}"
+                )
+                return []
 
             zfs_volumes.append(
-                {"name": z[0], "size": z[2], "pool": pool, "path": dataset_path}
+                {
+                    "name": z[0],
+                    "size": z[2],
+                    "pool": pool,
+                    "path": dataset_path,
+                    "device_name": device_name,
+                }
             )
-
-    print(zfs_volumes)
-
+    if DEBUG:
+        print(zfs_volumes)
     return zfs_volumes
 
 
@@ -182,6 +188,7 @@ def test_disk(device):
         return False
     except Exception as e:
         print("Something went wrong when trying to run blockdev")
+        print(e.with_traceback(None))
         return False
 
     if DEBUG:
@@ -190,12 +197,12 @@ def test_disk(device):
     # Get block size to use for the transfers
     try:
         # 'blockdev --getss' gets logical block size, and 'blockdev --getpbsz' gets physical block size.  Not sure which
-        # one is better for this program
+        # one is better for this program, but lets start with physical and see how it goes
         physical_block_size = int(
             subprocess.check_output([CMD_BLOCKDEV, "--getpbsz", device]).strip()
         )
-    except:
-        print("Something went wrong")
+    except Exception as e:
+        print(e.with_traceback())
         return False
 
     if DEBUG:
@@ -242,6 +249,7 @@ def test_disk(device):
                 test_byte,
             )
         except Exception as e:
+            print(e.with_traceback(None))
             return False
         if not write_status:
             print(f"Writing {test_byte} to {device} failed!")
@@ -317,6 +325,7 @@ def write_disk(
             m.close()
     except Exception as e:
         # TODO: Better reporting of write failures
+        print(e.with_traceback(None))
         return False
 
     return True
@@ -384,8 +393,6 @@ def main():
     args = parser.parse_args()
 
     # TODO: Require running as super-user
-
-    console = Console()
 
     # Output program info
     print()
