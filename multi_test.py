@@ -34,22 +34,23 @@ from rich.layout import Layout
 from rich.progress import Progress
 from rich.table import Table
 
-CMD_BLOCKDEV="/usr/sbin/blockdev"
-CMD_LSBLK="/usr/bin/lsblk"
-CMD_ZFS="/usr/bin/zfs"
+CMD_BLOCKDEV = "/usr/sbin/blockdev"
+CMD_LSBLK = "/usr/bin/lsblk"
+CMD_ZFS = "/usr/bin/zfs"
 DEBUG = False
 VERSION = "0.0.2"
 
 DEVICE_LIST = []
-DEVICE_PROGRESS = Array('I', [])
-DEVICE_STATUS = Array('B', [])
-TASK_LIST = Array('I', [])
+DEVICE_PROGRESS = Array("I", [])
+DEVICE_STATUS = Array("B", [])
+TASK_LIST = Array("I", [])
 
 
 def get_drive_list(selected_devices=None) -> list:
     try:
         lsblk_output = subprocess.check_output(
-            [CMD_LSBLK, "-o", "name,type,size,vendor,model", "-J"]).strip()
+            [CMD_LSBLK, "-o", "name,type,size,vendor,model", "-J"]
+        ).strip()
     except subprocess.CalledProcessError:
         print(f"Couldn't run lsblk.  Aborting!")
         return False
@@ -78,8 +79,15 @@ def get_drive_list(selected_devices=None) -> list:
                     if drive["name"] == friendly_name:
                         # print(f"setting 'selected' to True")
                         selected = True
-            drives.append({"name": drive['name'], "size": drive['size'], "vendor": drive['vendor'],
-                           "model": drive['model'], "selected": selected})
+            drives.append(
+                {
+                    "name": drive["name"],
+                    "size": drive["size"],
+                    "vendor": drive["vendor"],
+                    "model": drive["model"],
+                    "selected": selected,
+                }
+            )
     return drives
 
 
@@ -100,7 +108,11 @@ def get_zfs_volumes() -> list:
 
     # Retrieve the list of ZFS data sets
     try:
-        cmd_output = subprocess.Popen([CMD_ZFS, "list", "-p", "-H"], stdout=subprocess.PIPE, universal_newlines=True)
+        cmd_output = subprocess.Popen(
+            [CMD_ZFS, "list", "-p", "-H"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True,
+        )
         zfs_list_datasets = cmd_output.stdout.readlines()
     except subprocess.CalledProcessError:
         print(f"Calling zfs list failed.  Aborting!")
@@ -116,22 +128,27 @@ def get_zfs_volumes() -> list:
     zfs_list_volumes = []
     for dataset in zfs_datasets:
         try:
-            cmd_output = subprocess.Popen([CMD_ZFS, "get", "-H", "volsize", dataset],
-                                          stdout=subprocess.PIPE, universal_newlines=True)
+            cmd_output = subprocess.Popen(
+                [CMD_ZFS, "get", "-H", "volsize", dataset],
+                stdout=subprocess.PIPE,
+                universal_newlines=True,
+            )
             zfs_list_volumes.append(cmd_output.stdout.read())
         except subprocess.CalledProcessError:
             print(f"Calling zfs list failed.  Aborting!")
             return []
     for volume in zfs_list_volumes:
         z = volume.split()
-        if z[2] != '-':
+        if z[2] != "-":
             # Split the volume name into pool/dataset components
             pool = z[0].split("/")[0]
             dataset_path = z[0].removeprefix(pool + "/")
 
             # TODO: Retrieve the underlying storage device name.  ie /dev/zd0
 
-            zfs_volumes.append({"name": z[0], "size": z[2], "pool": pool, "path": dataset_path})
+            zfs_volumes.append(
+                {"name": z[0], "size": z[2], "pool": pool, "path": dataset_path}
+            )
 
     print(zfs_volumes)
 
@@ -157,7 +174,9 @@ def test_disk(device):
 
     # Get the total size of the device
     try:
-        device_size = int(subprocess.check_output([CMD_BLOCKDEV, "--getsize64", device]).strip())
+        device_size = int(
+            subprocess.check_output([CMD_BLOCKDEV, "--getsize64", device]).strip()
+        )
     except subprocess.CalledProcessError:
         print(f"Couldn't run blockdev on {device}.  Aborting!")
         return False
@@ -172,7 +191,9 @@ def test_disk(device):
     try:
         # 'blockdev --getss' gets logical block size, and 'blockdev --getpbsz' gets physical block size.  Not sure which
         # one is better for this program
-        physical_block_size = int(subprocess.check_output([CMD_BLOCKDEV, "--getpbsz", device]).strip())
+        physical_block_size = int(
+            subprocess.check_output([CMD_BLOCKDEV, "--getpbsz", device]).strip()
+        )
     except:
         print("Something went wrong")
         return False
@@ -187,7 +208,9 @@ def test_disk(device):
         # To add Windows support, apparently "os.O_BINARY" would need to be added
         device_handle = os.open(path=device, flags=os.O_DIRECT | os.O_RDWR)
     except FileNotFoundError:
-        print(f"Can't access device '{device}'. Permissions problem, or wrong device name maybe?")
+        print(
+            f"Can't access device '{device}'. Permissions problem, or wrong device name maybe?"
+        )
         return False
     except PermissionError:
         print(f"Trying to open '{device}' for writing failed. Did you forget sudo?")
@@ -196,9 +219,12 @@ def test_disk(device):
 
     # Test the device with various characters
     verify_succeeded = True
-    for test_byte in [bytearray.fromhex('aa'), bytearray.fromhex('55'),
-                      bytearray.fromhex('ff'), bytearray.fromhex('00')]:
-
+    for test_byte in [
+        bytearray.fromhex("aa"),
+        bytearray.fromhex("55"),
+        bytearray.fromhex("ff"),
+        bytearray.fromhex("00"),
+    ]:
         # Create a byte array of the character being tested
         test_array = bytearray()
         for i in range(physical_block_size):
@@ -207,8 +233,14 @@ def test_disk(device):
         # Write to the device
         write_status = False
         try:
-            write_status = write_disk(list_element, file_handle, physical_block_size, num_blocks_in_device,
-                                      test_array, test_byte)
+            write_status = write_disk(
+                list_element,
+                file_handle,
+                physical_block_size,
+                num_blocks_in_device,
+                test_array,
+                test_byte,
+            )
         except Exception as e:
             return False
         if not write_status:
@@ -220,8 +252,14 @@ def test_disk(device):
         # verify_status = False
         # try:
         # TODO: Put this back into a try block when I have some idea about the errors that can returned
-        verify_status = verify_disk(list_element, file_handle, physical_block_size, num_blocks_in_device,
-                                    test_array, test_byte)
+        verify_status = verify_disk(
+            list_element,
+            file_handle,
+            physical_block_size,
+            num_blocks_in_device,
+            test_array,
+            test_byte,
+        )
         # except:
         #     print(f"Reading from '{device}' failed!")
         #     verify_succeeded = False
@@ -239,16 +277,22 @@ def test_disk(device):
     return True
 
 
-def write_disk(list_element, file_to_be_read, physical_block_size, num_blocks_in_device,
-               array_to_write, test_byte) -> bool:
+def write_disk(
+    list_element,
+    file_to_be_read,
+    physical_block_size,
+    num_blocks_in_device,
+    array_to_write,
+    test_byte,
+) -> bool:
     global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS
-    if test_byte == bytearray.fromhex('aa'):
+    if test_byte == bytearray.fromhex("aa"):
         DEVICE_STATUS[list_element] = 1
-    elif test_byte == bytearray.fromhex('55'):
+    elif test_byte == bytearray.fromhex("55"):
         DEVICE_STATUS[list_element] = 3
-    elif test_byte == bytearray.fromhex('ff'):
+    elif test_byte == bytearray.fromhex("ff"):
         DEVICE_STATUS[list_element] = 5
-    elif test_byte == bytearray.fromhex('00'):
+    elif test_byte == bytearray.fromhex("00"):
         DEVICE_STATUS[list_element] = 7
 
     # Set up progress counter output
@@ -264,7 +308,11 @@ def write_disk(list_element, file_to_be_read, physical_block_size, num_blocks_in
                 DEVICE_PROGRESS[list_element] += 1
 
             # Write the test byte to disk
-            m = mmap.mmap(fileno=file_to_be_read.fileno(), length=physical_block_size, offset=seek_position)
+            m = mmap.mmap(
+                fileno=file_to_be_read.fileno(),
+                length=physical_block_size,
+                offset=seek_position,
+            )
             m.write(array_to_write)
             m.close()
     except Exception as e:
@@ -274,16 +322,22 @@ def write_disk(list_element, file_to_be_read, physical_block_size, num_blocks_in
     return True
 
 
-def verify_disk(list_element, file_to_be_read, physical_block_size, num_blocks_in_device, comparison_array,
-                expected_byte) -> bool:
+def verify_disk(
+    list_element,
+    file_to_be_read,
+    physical_block_size,
+    num_blocks_in_device,
+    comparison_array,
+    expected_byte,
+) -> bool:
     global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS
-    if expected_byte == bytearray.fromhex('aa'):
+    if expected_byte == bytearray.fromhex("aa"):
         DEVICE_STATUS[list_element] = 2
-    elif expected_byte == bytearray.fromhex('55'):
+    elif expected_byte == bytearray.fromhex("55"):
         DEVICE_STATUS[list_element] = 4
-    elif expected_byte == bytearray.fromhex('ff'):
+    elif expected_byte == bytearray.fromhex("ff"):
         DEVICE_STATUS[list_element] = 6
-    elif expected_byte == bytearray.fromhex('00'):
+    elif expected_byte == bytearray.fromhex("00"):
         DEVICE_STATUS[list_element] = 8
 
     # Set up progress counter output
@@ -298,7 +352,11 @@ def verify_disk(list_element, file_to_be_read, physical_block_size, num_blocks_i
             DEVICE_PROGRESS[list_element] += 1
 
         # Read the test byte from disk
-        m = mmap.mmap(fileno=file_to_be_read.fileno(), length=physical_block_size, offset=seek_position)
+        m = mmap.mmap(
+            fileno=file_to_be_read.fileno(),
+            length=physical_block_size,
+            offset=seek_position,
+        )
         read_buffer = m.read(physical_block_size)
         if read_buffer != comparison_array:
             # TODO: Better reporting of verification failure(s)
@@ -311,10 +369,18 @@ def main():
     global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS, TASK_LIST
 
     # Get the device name(s) to test
-    parser = argparse.ArgumentParser(description="Badblocks, but in Python and able"
-                                                 " to test multiple devices simultaneously")
-    parser.add_argument("-d", "--devices", help="device to test (multiple occurrences is allowed)", type=pathlib.Path,
-                        action="append", required=False)
+    parser = argparse.ArgumentParser(
+        description="Badblocks, but in Python and able"
+        " to test multiple devices simultaneously"
+    )
+    parser.add_argument(
+        "-d",
+        "--devices",
+        help="device to test (multiple occurrences is allowed)",
+        type=pathlib.Path,
+        action="append",
+        required=False,
+    )
     args = parser.parse_args()
 
     # TODO: Require running as super-user
@@ -329,10 +395,7 @@ def main():
         Layout(name="header", size=3),
         Layout(name="main", ratio=1),
     )
-    layout["main"].split_row(
-        Layout(name="left"),
-        Layout(name="right")
-    )
+    layout["main"].split_row(Layout(name="left"), Layout(name="right"))
 
     grid = Table.grid(expand=True)
     grid.add_column(justify="center", ratio=1)
@@ -346,8 +409,10 @@ def main():
     #       Yes, if we can make sure things like zvols show their pool/volume name properly
 
     # Present the list of drives to the user
-    choice_table = Table(title="Choose the drives to destructively test",
-                         caption="Use up/down arrows. SPACE to select. ENTER to continue")
+    choice_table = Table(
+        title="Choose the drives to destructively test",
+        caption="Use up/down arrows. SPACE to select. ENTER to continue",
+    )
     choice_table.add_column("Test?")
     choice_table.add_column("Name")
     choice_table.add_column("Size")
@@ -380,15 +445,17 @@ def main():
     layout["right"].update(progress)
 
     # Size the progress information arrays appropriately
-    DEVICE_PROGRESS = Array('I', range(num_drives))
-    DEVICE_STATUS = Array('B', range(num_drives))
-    TASK_LIST = Array('I', range(num_drives))
+    DEVICE_PROGRESS = Array("I", range(num_drives))
+    DEVICE_STATUS = Array("B", range(num_drives))
+    TASK_LIST = Array("I", range(num_drives))
 
     cnt = 0
     for device in args.devices:
         DEVICE_LIST.append(device)
         friendly_name = str(device).split("/")[-1:][0]
-        TASK_LIST[cnt] = progress.add_task(f"[cyan]{friendly_name} writing...", total=100)
+        TASK_LIST[cnt] = progress.add_task(
+            f"[cyan]{friendly_name} writing...", total=100
+        )
         cnt += 1
 
     # Launch the background drive read/verify tasks
@@ -405,41 +472,74 @@ def main():
 
                 maybe_finished = True
                 for idx, task in enumerate(TASK_LIST):
-
                     # Determine the friendly name for the current task's device
                     device = DEVICE_LIST[idx]
                     friendly_name = str(device).split("/")[-1:][0]
 
                     # Update the task name in the rich progress output
                     if DEVICE_STATUS[idx] == 1:
-                        progress.update(task_id=task, description=f"[cyan]{friendly_name} writing 'aa'")
+                        progress.update(
+                            task_id=task,
+                            description=f"[cyan]{friendly_name} writing 'aa'",
+                        )
                     elif DEVICE_STATUS[idx] == 2:
-                        progress.update(task_id=task, description=f"[cyan]{friendly_name} verifying 'aa'")
+                        progress.update(
+                            task_id=task,
+                            description=f"[cyan]{friendly_name} verifying 'aa'",
+                        )
                     elif DEVICE_STATUS[idx] == 3:
-                        progress.update(task_id=task, description=f"[cyan]{friendly_name} writing '55'")
+                        progress.update(
+                            task_id=task,
+                            description=f"[cyan]{friendly_name} writing '55'",
+                        )
                     elif DEVICE_STATUS[idx] == 4:
-                        progress.update(task_id=task, description=f"[cyan]{friendly_name} verifying '55'")
+                        progress.update(
+                            task_id=task,
+                            description=f"[cyan]{friendly_name} verifying '55'",
+                        )
                     elif DEVICE_STATUS[idx] == 5:
-                        progress.update(task_id=task, description=f"[cyan]{friendly_name} writing 'ff'")
+                        progress.update(
+                            task_id=task,
+                            description=f"[cyan]{friendly_name} writing 'ff'",
+                        )
                     elif DEVICE_STATUS[idx] == 6:
-                        progress.update(task_id=task, description=f"[cyan]{friendly_name} verifying 'ff'")
+                        progress.update(
+                            task_id=task,
+                            description=f"[cyan]{friendly_name} verifying 'ff'",
+                        )
                     elif DEVICE_STATUS[idx] == 7:
-                        progress.update(task_id=task, description=f"[cyan]{friendly_name} writing '00'")
+                        progress.update(
+                            task_id=task,
+                            description=f"[cyan]{friendly_name} writing '00'",
+                        )
                     elif DEVICE_STATUS[idx] == 8:
-                        progress.update(task_id=task, description=f"[cyan]{friendly_name} verifying '00'")
+                        progress.update(
+                            task_id=task,
+                            description=f"[cyan]{friendly_name} verifying '00'",
+                        )
                     elif DEVICE_STATUS[idx] == 20:
-                        progress.update(task_id=task, description=f"[cyan]{friendly_name} verification failed")
+                        progress.update(
+                            task_id=task,
+                            description=f"[cyan]{friendly_name} verification failed",
+                        )
                     elif DEVICE_STATUS[idx] == 30:
-                        progress.update(task_id=task, description=f"[cyan]{friendly_name} completed successfully")
+                        progress.update(
+                            task_id=task,
+                            description=f"[cyan]{friendly_name} completed successfully",
+                        )
                     else:
-                        progress.update(task_id=task, description=f"[cyan]{friendly_name} unknown?")
+                        progress.update(
+                            task_id=task, description=f"[cyan]{friendly_name} unknown?"
+                        )
 
                     # Determine if any tasks are still progressing
                     # TODO: The individual tasks have a boolean "finished" attribute which seems like it should be
                     #       better for this
                     if DEVICE_STATUS[idx] < 20:
                         maybe_finished = False
-                        progress.update(task_id=task, completed=DEVICE_PROGRESS[idx], refresh=True)
+                        progress.update(
+                            task_id=task, completed=DEVICE_PROGRESS[idx], refresh=True
+                        )
                     else:
                         progress.update(task_id=task, completed=100, refresh=True)
 
