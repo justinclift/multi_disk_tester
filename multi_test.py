@@ -36,6 +36,7 @@ from rich.table import Table
 
 CMD_BLOCKDEV="/usr/sbin/blockdev"
 CMD_LSBLK="/usr/bin/lsblk"
+CMD_ZFS="/usr/bin/zfs"
 DEBUG = False
 VERSION = "0.0.2"
 
@@ -45,7 +46,7 @@ DEVICE_STATUS = Array('B', [])
 TASK_LIST = Array('I', [])
 
 
-def get_drive_list(selected_devices=None):
+def get_drive_list(selected_devices=None) -> list:
     try:
         lsblk_output = subprocess.check_output(
             [CMD_LSBLK, "-o", "name,type,size,vendor,model", "-J"]).strip()
@@ -55,10 +56,14 @@ def get_drive_list(selected_devices=None):
     except FileNotFoundError as e:
         print(f"lsblk doesn't seem to exist at {CMD_LSBLK}")
         return False
-    except Exception as e:
-        return False
 
     drives_json = rapidjson.loads(lsblk_output)
+
+    # Get the zfs volume list
+    zfs_vol_list = get_zfs_volumes()
+
+    sys.exit(1)
+
     drives = []
     for drive in drives_json["blockdevices"]:
         if drive["type"] == "disk":
@@ -76,6 +81,61 @@ def get_drive_list(selected_devices=None):
             drives.append({"name": drive['name'], "size": drive['size'], "vendor": drive['vendor'],
                            "model": drive['model'], "selected": selected})
     return drives
+
+
+def get_zfs_volumes() -> list:
+    """
+    If zfs is present, then this function returns a list of the zfs block devices along with some useful meta data.
+    :return:
+    """
+
+    # Check if the zfs command line utility is present
+    try:
+        zfs_stat = os.stat(CMD_ZFS, follow_symlinks=True)
+    except FileNotFoundError:
+        # ZFS doesn't seem to be installed
+        if DEBUG:
+            print("zfs command not found")
+        return []
+
+    # Retrieve the list of ZFS data sets
+    try:
+        cmd_output = subprocess.Popen([CMD_ZFS, "list", "-p", "-H"], stdout=subprocess.PIPE, universal_newlines=True)
+        zfs_list_datasets = cmd_output.stdout.readlines()
+    except subprocess.CalledProcessError:
+        print(f"Calling zfs list failed.  Aborting!")
+        return []
+    zfs_datasets = []
+    for line in zfs_list_datasets:
+        zfs_datasets.append(line.split()[0:1][0])
+    if DEBUG:
+        print(zfs_datasets)
+
+    # Separate out the list of ZFS volumes
+    zfs_volumes = []
+    zfs_list_volumes = []
+    for dataset in zfs_datasets:
+        try:
+            cmd_output = subprocess.Popen([CMD_ZFS, "get", "-H", "volsize", dataset],
+                                          stdout=subprocess.PIPE, universal_newlines=True)
+            zfs_list_volumes.append(cmd_output.stdout.read())
+        except subprocess.CalledProcessError:
+            print(f"Calling zfs list failed.  Aborting!")
+            return []
+    for volume in zfs_list_volumes:
+        z = volume.split()
+        if z[2] != '-':
+            # Split the volume name into pool/dataset components
+            pool = z[0].split("/")[0]
+            dataset_path = z[0].removeprefix(pool + "/")
+
+            # TODO: Retrieve the underlying storage device name.  ie /dev/zd0
+
+            zfs_volumes.append({"name": z[0], "size": z[2], "pool": pool, "path": dataset_path})
+
+    print(zfs_volumes)
+
+    return zfs_volumes
 
 
 def test_disk(device):
