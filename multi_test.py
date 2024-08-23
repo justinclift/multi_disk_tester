@@ -386,7 +386,7 @@ def verify_disk(
     return True
 
 
-def build_drive_list_table(devices=None, selected_row=0) -> Table:
+def build_drive_list_table(drive_list, selected_row=0) -> Table:
     drive_list_table = Table(
         title="Choose the drives to destructively test",
         caption="Use up/down arrows. SPACE to select. ENTER to continue",
@@ -396,19 +396,6 @@ def build_drive_list_table(devices=None, selected_row=0) -> Table:
     drive_list_table.add_column("Size")
     drive_list_table.add_column("Vendor")
     drive_list_table.add_column("Model")
-
-    # Determine the number of devices passed on the command line
-    # num_drives = 0
-    if devices:
-        # num_drives = len(devices)
-        drive_list = get_drive_list(devices)
-    else:
-        drive_list = get_drive_list()
-        print(drive_list_table)
-
-        # TODO: How to handle keyboard input? ie: cursor up/down, space to select, and probably enter to continue?
-
-        sys.exit(1)
 
     current_row = 0
     selected_color = "green on blue"
@@ -469,8 +456,21 @@ def main():
     # grid.add_row("Finished: " + datetime.now().ctime().replace(":", "[blink]:[/]"))
     layout["header"].update(grid)
 
+    # Determine the number of devices passed on the command line
+    num_drives = 0
+    if args.devices:
+        num_drives = len(args.devices)
+        drive_list = get_drive_list(args.devices)
+    else:
+        drive_list = get_drive_list()
+        print(args.drive_list_table)
+
+        # TODO: How to handle keyboard input? ie: cursor up/down, space to select, and probably enter to continue?
+
+        sys.exit(1)
+
     # Create the list of drives in the left panel
-    choice_table = build_drive_list_table(args.devices)
+    choice_table = build_drive_list_table(drive_list)
     layout["left"].update(choice_table)
 
     # TODO: Check if any of the selected devices are currently mounted, and if so then handle it.  Refuse to proceed?
@@ -483,9 +483,6 @@ def main():
     layout["right"].update(progress)
 
     # Size the progress information arrays appropriately
-    num_drives = 0
-    if args.devices:
-        num_drives = len(args.devices)
     DEVICE_PROGRESS = Array("I", range(num_drives))
     DEVICE_STATUS = Array("B", range(num_drives))
     TASK_LIST = Array("I", range(num_drives))
