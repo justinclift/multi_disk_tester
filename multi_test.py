@@ -19,23 +19,103 @@ from datetime import datetime
 from multiprocessing import Pool, Array
 
 # Rich
+from rich import print
 from rich.layout import Layout
 from rich.live import Live
 from rich.progress import Progress
 from rich.table import Table
 
+# Prompt Toolkit
+from prompt_toolkit import prompt
+from prompt_toolkit.key_binding import KeyBindings
+
 CMD_BLOCKDEV = "/usr/sbin/blockdev"
 CMD_LSBLK = "/usr/bin/lsblk"
 CMD_ZFS = "/usr/bin/zfs"
 DEBUG = False
-VERSION = "0.0.2"
+VERSION = "0.0.3"
 
 DEVICE_LIST = []
 DEVICE_PROGRESS = Array("I", [])
 DEVICE_STATUS = Array("B", [])
 TASK_LIST = Array("I", [])
 
-SELECTED_ROW = 0
+CURSOR_ROW = 0
+CURSOR_VISIBLE = True
+drive_list = []
+layout = Layout(name="root")
+
+bindings = KeyBindings()
+
+
+@bindings.add("up")
+def _(event):
+    "Move the cursor up when the up arrow is pressed"
+    global CURSOR_ROW
+    global drive_list, layout
+
+    CURSOR_ROW -= 1 if CURSOR_ROW > 0 else 0
+    choice_table = build_drive_list_table(CURSOR_ROW)
+    layout["left"].update(choice_table)
+    print(layout)
+
+
+@bindings.add("down")
+def _(event):
+    "Move the cursor down when the down arrow is pressed"
+    global CURSOR_ROW
+    global drive_list, layout
+
+    drive_list_length = len(drive_list)
+    CURSOR_ROW += 1 if CURSOR_ROW < drive_list_length else drive_list_length
+    choice_table = build_drive_list_table(CURSOR_ROW)
+    layout["left"].update(choice_table)
+    print(layout)
+
+
+@bindings.add("space")
+def _(event):
+    "Invert the current drive selection when the space bar is pressed"
+    update_drive_selection()
+    choice_table = build_drive_list_table(CURSOR_ROW)
+    layout["left"].update(choice_table)
+    print(layout)
+
+
+def build_drive_list_table(selected_row=0) -> Table:
+    global CURSOR_VISIBLE
+    global drive_list
+    drive_list_table = Table(
+        title="Choose the drives to destructively test",
+        caption="Use up/down arrows. SPACE to select. ENTER to continue",
+    )
+    drive_list_table.add_column("Test?")
+    drive_list_table.add_column("Name")
+    drive_list_table.add_column("Size")
+    drive_list_table.add_column("Vendor")
+    drive_list_table.add_column("Model")
+
+    current_row = 0
+    selected_color = "green on blue"
+    for drive in drive_list:
+        vendor = "Unknown" if drive["vendor"] is None else drive["vendor"].strip()
+        model = "Unknown" if drive["model"] is None else drive["model"].strip()
+        selection = r"\[x]" if drive["selected"] else r"\[ ]"
+        if current_row == selected_row and CURSOR_VISIBLE:
+            drive_list_table.add_row(
+                f"[{selected_color}]{selection}[/]",
+                f"[{selected_color}]{drive['name']}[/]",
+                f"[{selected_color}]{drive['size']}[/]",
+                f"[{selected_color}]{vendor}[/]",
+                f"[{selected_color}]{model}[/]",
+            )
+        else:
+            drive_list_table.add_row(
+                selection, drive["name"], drive["size"], vendor, model
+            )
+        current_row += 1
+
+    return drive_list_table
 
 
 def get_drive_list(selected_devices=None) -> list:
@@ -45,10 +125,10 @@ def get_drive_list(selected_devices=None) -> list:
         ).strip()
     except subprocess.CalledProcessError:
         print("Couldn't run lsblk.  Aborting!")
-        return False
+        return []
     except FileNotFoundError:
         print("lsblk doesn't seem to exist at {CMD_LSBLK}")
-        return False
+        return []
 
     drives_json = rapidjson.loads(lsblk_output)
 
@@ -78,10 +158,14 @@ def get_drive_list(selected_devices=None) -> list:
                             selected = True
 
             # If the name matches a zfs volume device, then we use pool/dataset for the name instead
+            zfs = False
             drive_name = drive["name"]
+            device_name = drive["name"]
             for zfs_volume in zfs_vol_list:
                 if zfs_volume["device_name"] == drive["name"]:
                     drive_name = zfs_volume["name"]
+                    device_name = zfs_volume["device_name"]
+                    zfs = True
 
             # Add the drive to the selection display
             drives.append(
@@ -91,10 +175,25 @@ def get_drive_list(selected_devices=None) -> list:
                     "vendor": drive["vendor"],
                     "model": drive["model"],
                     "selected": selected,
+                    "device_name": device_name,
+                    "zfs": zfs,
                 }
             )
-
     return sorted(drives, key=lambda entry: entry["name"])
+
+
+def get_selected_devices() -> list:
+    global drive_list
+
+    selection_list = []
+    for row in drive_list:
+        if row["selected"]:
+            if row["zfs"]:
+                selection_list.append("/dev/zvol/" + row["name"])
+            else:
+                selection_list.append(row["name"])
+
+    return selection_list
 
 
 def get_zfs_volumes() -> list:
@@ -274,7 +373,7 @@ def test_disk(device):
         # TODO: This feels like a dodgy way to check the verification worked?
         # verify_status = False
         # try:
-        # TODO: Put this back into a try block when I have some idea about the errors that can returned
+        # TODO: Put this back into a try block when I have some idea about the errors that can be returned
         verify_status = verify_disk(
             list_element,
             file_handle,
@@ -297,6 +396,77 @@ def test_disk(device):
         DEVICE_STATUS[list_element] = 30  # Disk testing was successful
     else:
         DEVICE_STATUS[list_element] = 20  # Disk testing failed
+    return True
+
+
+def update_drive_selection():
+    """
+    Updates the selection status of drives in the drive_list global array
+    :return:
+    """
+    global CURSOR_ROW
+    global drive_list
+    current_row = 0
+    new_list = []
+    for row in drive_list:
+        new_selected = row["selected"]
+        if current_row == CURSOR_ROW:
+            new_selected = not row["selected"]
+        new_list.append(
+            {
+                "name": row["name"],
+                "size": row["size"],
+                "vendor": row["vendor"],
+                "model": row["model"],
+                "selected": new_selected,
+                "device_name": row["device_name"],
+                "zfs": row["zfs"],
+            }
+        )
+        current_row += 1
+    drive_list = new_list
+
+
+def verify_disk(
+    list_element,
+    file_to_be_read,
+    physical_block_size,
+    num_blocks_in_device,
+    comparison_array,
+    expected_byte,
+) -> bool:
+    global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS
+    if expected_byte == bytearray.fromhex("aa"):
+        DEVICE_STATUS[list_element] = 2
+    elif expected_byte == bytearray.fromhex("55"):
+        DEVICE_STATUS[list_element] = 4
+    elif expected_byte == bytearray.fromhex("ff"):
+        DEVICE_STATUS[list_element] = 6
+    elif expected_byte == bytearray.fromhex("00"):
+        DEVICE_STATUS[list_element] = 8
+
+    # Set up progress counter output
+    progress_counter_blocks = round(num_blocks_in_device / 100)
+    DEVICE_PROGRESS[list_element] = 0
+
+    for block_number in range(num_blocks_in_device):
+        seek_position = block_number * physical_block_size
+
+        # Update the reported progress percentage
+        if block_number % progress_counter_blocks == 0:
+            DEVICE_PROGRESS[list_element] += 1
+
+        # Read the test byte from disk
+        m = mmap.mmap(
+            fileno=file_to_be_read.fileno(),
+            length=physical_block_size,
+            offset=seek_position,
+        )
+        read_buffer = m.read(physical_block_size)
+        if read_buffer != comparison_array:
+            # TODO: Better reporting of verification failure(s)
+            return False
+        m.close()
     return True
 
 
@@ -346,85 +516,15 @@ def write_disk(
     return True
 
 
-def verify_disk(
-    list_element,
-    file_to_be_read,
-    physical_block_size,
-    num_blocks_in_device,
-    comparison_array,
-    expected_byte,
-) -> bool:
-    global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS
-    if expected_byte == bytearray.fromhex("aa"):
-        DEVICE_STATUS[list_element] = 2
-    elif expected_byte == bytearray.fromhex("55"):
-        DEVICE_STATUS[list_element] = 4
-    elif expected_byte == bytearray.fromhex("ff"):
-        DEVICE_STATUS[list_element] = 6
-    elif expected_byte == bytearray.fromhex("00"):
-        DEVICE_STATUS[list_element] = 8
-
-    # Set up progress counter output
-    progress_counter_blocks = round(num_blocks_in_device / 100)
-    DEVICE_PROGRESS[list_element] = 0
-
-    for block_number in range(num_blocks_in_device):
-        seek_position = block_number * physical_block_size
-
-        # Update the reported progress percentage
-        if block_number % progress_counter_blocks == 0:
-            DEVICE_PROGRESS[list_element] += 1
-
-        # Read the test byte from disk
-        m = mmap.mmap(
-            fileno=file_to_be_read.fileno(),
-            length=physical_block_size,
-            offset=seek_position,
-        )
-        read_buffer = m.read(physical_block_size)
-        if read_buffer != comparison_array:
-            # TODO: Better reporting of verification failure(s)
-            return False
-        m.close()
-    return True
-
-
-def build_drive_list_table(drive_list, selected_row=0) -> Table:
-    drive_list_table = Table(
-        title="Choose the drives to destructively test",
-        caption="Use up/down arrows. SPACE to select. ENTER to continue",
-    )
-    drive_list_table.add_column("Test?")
-    drive_list_table.add_column("Name")
-    drive_list_table.add_column("Size")
-    drive_list_table.add_column("Vendor")
-    drive_list_table.add_column("Model")
-
-    current_row = 0
-    selected_color = "green on blue"
-    for drive in drive_list:
-        vendor = "Unknown" if drive["vendor"] is None else drive["vendor"].strip()
-        model = "Unknown" if drive["model"] is None else drive["model"].strip()
-        selection = r"\[x]" if drive["selected"] else r"\[ ]"
-        if current_row == selected_row:
-            drive_list_table.add_row(
-                f"[{selected_color}]{selection}[/]",
-                f"[{selected_color}]{drive['name']}[/]",
-                f"[{selected_color}]{drive['size']}[/]",
-                f"[{selected_color}]{vendor}[/]",
-                f"[{selected_color}]{model}[/]",
-            )
-        else:
-            drive_list_table.add_row(
-                selection, drive["name"], drive["size"], vendor, model
-            )
-        current_row += 1
-
-    return drive_list_table
-
-
 def main():
-    global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS, TASK_LIST
+    global \
+        CURSOR_ROW, \
+        CURSOR_VISIBLE, \
+        DEVICE_LIST, \
+        DEVICE_PROGRESS, \
+        DEVICE_STATUS, \
+        TASK_LIST
+    global drive_list, layout
 
     # Get the device name(s) to test
     parser = argparse.ArgumentParser(
@@ -443,7 +543,6 @@ def main():
     # TODO: Require running as super-user
 
     # Create main window layout
-    layout = Layout(name="root")
     layout.split(
         Layout(name="header", size=3),
         Layout(name="main", ratio=1),
@@ -459,39 +558,48 @@ def main():
     # grid.add_row("Finished: " + datetime.now().ctime().replace(":", "[blink]:[/]"))
     layout["header"].update(grid)
 
+    # TODO: We should probably also handle being passed zfs pool/dataset on the command line (ie "-d pool/dataset1"),
+    #       without needing the "/dev/zvol/" text fragment at the start of the device name
+
     # Determine the number of devices passed on the command line
-    num_drives = 0
     if args.devices:
-        num_drives = len(args.devices)
         drive_list = get_drive_list(args.devices)
+        CURSOR_VISIBLE = False
     else:
         drive_list = get_drive_list()
-        print(args.drive_list_table)
-
-        # TODO: How to handle keyboard input? ie: cursor up/down, space to select, and probably enter to continue?
-
-        sys.exit(1)
 
     # Create the list of drives in the left panel
-    choice_table = build_drive_list_table(drive_list, SELECTED_ROW)
+    choice_table = build_drive_list_table(CURSOR_ROW)
     layout["left"].update(choice_table)
+    print(layout)
+
+    # If no devices were provided on the command line, then use the drive selection dialog
+    # Keys: cursor up/down, space to select, and enter to continue
+    if not args.devices:
+        prompt(key_bindings=bindings)
+        CURSOR_VISIBLE = False
+        choice_table = build_drive_list_table(CURSOR_ROW)
+        layout["left"].update(choice_table)
+        print(layout)
+    selected_devices = get_selected_devices()
+    if not selected_devices:
+        print("No drives were selected.  Aborting.")
+        sys.exit(1)
 
     # TODO: Check if any of the selected devices are currently mounted, and if so then handle it.  Refuse to proceed?
 
-    # TODO: We should probably also handle being passed zfs pool/dataset on the command line (ie "-d pool/dataset1"),
-    #       without needing the "/dev/zvol/" text fragment at the start of the device name
+    # Size the progress information arrays appropriately
+    num_drives = len(selected_devices)
+    DEVICE_PROGRESS = Array("I", range(num_drives))
+    DEVICE_STATUS = Array("B", range(num_drives))
+    TASK_LIST = Array("I", range(num_drives))
 
     # Create the progress bar in the right panel
     progress = Progress()
     layout["right"].update(progress)
 
-    # Size the progress information arrays appropriately
-    DEVICE_PROGRESS = Array("I", range(num_drives))
-    DEVICE_STATUS = Array("B", range(num_drives))
-    TASK_LIST = Array("I", range(num_drives))
-
     cnt = 0
-    for device in args.devices:
+    for device in selected_devices:
         DEVICE_LIST.append(device)
         friendly_name = str(device).split("/")[-1:][0]
         TASK_LIST[cnt] = progress.add_task(
