@@ -22,6 +22,8 @@ from multiprocessing import Pool, Array
 from rich import print
 from rich.layout import Layout
 from rich.live import Live
+from rich.padding import Padding
+from rich.panel import Panel
 from rich.progress import Progress
 from rich.table import Table
 
@@ -55,7 +57,7 @@ def _(event):
     global drive_list, layout
 
     CURSOR_ROW -= 1 if CURSOR_ROW > 0 else 0
-    choice_table = build_drive_list_table(CURSOR_ROW)
+    choice_table = build_drive_list_panel(CURSOR_ROW)
     layout["left"].update(choice_table)
     print(layout)
 
@@ -68,7 +70,7 @@ def _(event):
 
     drive_list_length = len(drive_list)
     CURSOR_ROW += 1 if CURSOR_ROW < drive_list_length else drive_list_length
-    choice_table = build_drive_list_table(CURSOR_ROW)
+    choice_table = build_drive_list_panel(CURSOR_ROW)
     layout["left"].update(choice_table)
     print(layout)
 
@@ -77,12 +79,12 @@ def _(event):
 def _(event):
     "Invert the current drive selection when the space bar is pressed"
     update_drive_selection()
-    choice_table = build_drive_list_table(CURSOR_ROW)
+    choice_table = build_drive_list_panel(CURSOR_ROW)
     layout["left"].update(choice_table)
     print(layout)
 
 
-def build_drive_list_table(selected_row=0) -> Table:
+def build_drive_list_panel(selected_row=0) -> Panel:
     global CURSOR_VISIBLE
     global drive_list
     drive_list_table = Table(
@@ -115,7 +117,7 @@ def build_drive_list_table(selected_row=0) -> Table:
             )
         current_row += 1
 
-    return drive_list_table
+    return Panel(drive_list_table)
 
 
 def get_drive_list(selected_devices=None) -> list:
@@ -569,8 +571,14 @@ def main():
         drive_list = get_drive_list()
 
     # Create the list of drives in the left panel
-    choice_table = build_drive_list_table(CURSOR_ROW)
-    layout["left"].update(choice_table)
+    choice_panel = build_drive_list_panel(CURSOR_ROW)
+    layout["left"].update(choice_panel)
+
+    # Create the progress bar in the right panel
+    progress = Progress()
+    progress_padding = Padding(progress, (1, 0))
+    progress_panel = Panel(progress_padding, title="Test progress")
+    layout["right"].update(progress_panel)
     print(layout)
 
     # If no devices were provided on the command line, then use the drive selection dialog
@@ -578,8 +586,8 @@ def main():
     if not args.devices:
         prompt(key_bindings=bindings)
         CURSOR_VISIBLE = False
-        choice_table = build_drive_list_table(CURSOR_ROW)
-        layout["left"].update(choice_table)
+        choice_panel = build_drive_list_panel(CURSOR_ROW)
+        layout["left"].update(choice_panel)
         print(layout)
     selected_devices = get_selected_devices()
     if not selected_devices:
@@ -593,10 +601,6 @@ def main():
     DEVICE_PROGRESS = Array("I", range(num_drives))
     DEVICE_STATUS = Array("B", range(num_drives))
     TASK_LIST = Array("I", range(num_drives))
-
-    # Create the progress bar in the right panel
-    progress = Progress()
-    layout["right"].update(progress)
 
     cnt = 0
     for device in selected_devices:
