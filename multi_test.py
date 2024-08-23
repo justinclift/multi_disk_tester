@@ -18,8 +18,9 @@ import rapidjson
 from datetime import datetime
 from multiprocessing import Pool, Array
 
-from rich import print
+# Rich
 from rich.layout import Layout
+from rich.live import Live
 from rich.progress import Progress
 from rich.table import Table
 
@@ -33,6 +34,8 @@ DEVICE_LIST = []
 DEVICE_PROGRESS = Array("I", [])
 DEVICE_STATUS = Array("B", [])
 TASK_LIST = Array("I", [])
+
+SELECTED_ROW = 0
 
 
 def get_drive_list(selected_devices=None) -> list:
@@ -470,7 +473,7 @@ def main():
         sys.exit(1)
 
     # Create the list of drives in the left panel
-    choice_table = build_drive_list_table(drive_list)
+    choice_table = build_drive_list_table(drive_list, SELECTED_ROW)
     layout["left"].update(choice_table)
 
     # TODO: Check if any of the selected devices are currently mounted, and if so then handle it.  Refuse to proceed?
@@ -502,11 +505,7 @@ def main():
 
         # This main process just reports the results until the tasks are finished
         finished = False
-        from rich.live import Live
-
         with Live(layout, refresh_per_second=10, screen=False):
-            choice_table.grid()
-
             while not finished:
                 time.sleep(0.1)
 
