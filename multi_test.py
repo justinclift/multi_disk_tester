@@ -60,8 +60,19 @@ def get_drive_list(selected_devices=None) -> list:
             if selected_devices:
                 for sel in selected_devices:
                     friendly_name = str(sel).split("/")[-1:][0]
+
+                    # Check if the selected device matches the /dev/zd[number] name
                     if drive["name"] == friendly_name:
                         selected = True
+
+                    # Check if the selected device matches the ZFS pool/dataset name
+                    pool_dataset = str(sel).removeprefix("/dev/zvol/")
+                    for zfs_volume in zfs_vol_list:
+                        if (
+                            drive["name"] == zfs_volume["device_name"]
+                            and pool_dataset == zfs_volume["name"]
+                        ):
+                            selected = True
 
             # If the name matches a zfs volume device, then we use pool/dataset for the name instead
             drive_name = drive["name"]
@@ -79,6 +90,7 @@ def get_drive_list(selected_devices=None) -> list:
                     "selected": selected,
                 }
             )
+
     return drives
 
 
@@ -374,13 +386,59 @@ def verify_disk(
     return True
 
 
+def build_drive_list_table(devices=None, selected_row=0) -> Table:
+    drive_list_table = Table(
+        title="Choose the drives to destructively test",
+        caption="Use up/down arrows. SPACE to select. ENTER to continue",
+    )
+    drive_list_table.add_column("Test?")
+    drive_list_table.add_column("Name")
+    drive_list_table.add_column("Size")
+    drive_list_table.add_column("Vendor")
+    drive_list_table.add_column("Model")
+
+    # Determine the number of devices passed on the command line
+    # num_drives = 0
+    if devices:
+        # num_drives = len(devices)
+        drive_list = get_drive_list(devices)
+    else:
+        drive_list = get_drive_list()
+        print(drive_list_table)
+
+        # TODO: How to handle keyboard input? ie: cursor up/down, space to select, and probably enter to continue?
+
+        sys.exit(1)
+
+    current_row = 0
+    selected_color = "green on blue"
+    for drive in drive_list:
+        vendor = "Unknown" if drive["vendor"] is None else drive["vendor"].strip()
+        model = "Unknown" if drive["model"] is None else drive["model"].strip()
+        selection = r"\[x]" if drive["selected"] else r"\[ ]"
+        if current_row == selected_row:
+            drive_list_table.add_row(
+                f"[{selected_color}]{selection}[/]",
+                f"[{selected_color}]{drive['name']}[/]",
+                f"[{selected_color}]{drive['size']}[/]",
+                f"[{selected_color}]{vendor}[/]",
+                f"[{selected_color}]{model}[/]",
+            )
+        else:
+            drive_list_table.add_row(
+                selection, drive["name"], drive["size"], vendor, model
+            )
+        current_row += 1
+
+    return drive_list_table
+
+
 def main():
     global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS, TASK_LIST
 
     # Get the device name(s) to test
     parser = argparse.ArgumentParser(
-        description="Badblocks, but in Python and able"
-        " to test multiple devices simultaneously"
+        description="Badblocks, but in Python and able to test multiple devices simultaneously"
     )
     parser.add_argument(
         "-d",
@@ -394,9 +452,7 @@ def main():
 
     # TODO: Require running as super-user
 
-    # Output program info
-    print()
-
+    # Create main window layout
     layout = Layout(name="root")
     layout.split(
         Layout(name="header", size=3),
@@ -404,6 +460,7 @@ def main():
     )
     layout["main"].split_row(Layout(name="left"), Layout(name="right"))
 
+    # Create header
     grid = Table.grid(expand=True)
     grid.add_column(justify="center", ratio=1)
     grid.add_row(f"Destructive disk testing utility v{VERSION}")
@@ -412,46 +469,23 @@ def main():
     # grid.add_row("Finished: " + datetime.now().ctime().replace(":", "[blink]:[/]"))
     layout["header"].update(grid)
 
-    # TODO: Should we show the list of drives even if passed a list of command line options?
-    #       Yes, if we can make sure things like zvols show their pool/volume name properly
-
-    # Present the list of drives to the user
-    choice_table = Table(
-        title="Choose the drives to destructively test",
-        caption="Use up/down arrows. SPACE to select. ENTER to continue",
-    )
-    choice_table.add_column("Test?")
-    choice_table.add_column("Name")
-    choice_table.add_column("Size")
-    choice_table.add_column("Vendor")
-    choice_table.add_column("Model")
-
-    # Determine the number of devices passed on the command line
-    num_drives = 0
-    if args.devices:
-        num_drives = len(args.devices)
-        drive_list = get_drive_list(args.devices)
-    else:
-        drive_list = get_drive_list()
-        print(layout)
-        # TODO: How to handle keyboard input? ie: cursor up/down, space to select, and probably enter to continue?
-
-        sys.exit(1)
-
-    for drive in drive_list:
-        vendor = "Unknown" if drive["vendor"] is None else drive["vendor"].strip()
-        model = "Unknown" if drive["model"] is None else drive["model"].strip()
-        selection = "\[x]" if drive["selected"] else "\[ ]"
-        choice_table.add_row(selection, drive["name"], drive["size"], vendor, model)
-
+    # Create the list of drives in the left panel
+    choice_table = build_drive_list_table(args.devices)
     layout["left"].update(choice_table)
 
     # TODO: Check if any of the selected devices are currently mounted, and if so then handle it.  Refuse to proceed?
 
+    # TODO: We should probably also handle being passed zfs pool/dataset on the command line (ie "-d pool/dataset1"),
+    #       without needing the "/dev/zvol/" text fragment at the start of the device name
+
+    # Create the progress bar in the right panel
     progress = Progress()
     layout["right"].update(progress)
 
     # Size the progress information arrays appropriately
+    num_drives = 0
+    if args.devices:
+        num_drives = len(args.devices)
     DEVICE_PROGRESS = Array("I", range(num_drives))
     DEVICE_STATUS = Array("B", range(num_drives))
     TASK_LIST = Array("I", range(num_drives))
@@ -474,6 +508,8 @@ def main():
         from rich.live import Live
 
         with Live(layout, refresh_per_second=10, screen=False):
+            choice_table.grid()
+
             while not finished:
                 time.sleep(0.1)
 
