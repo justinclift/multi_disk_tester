@@ -91,7 +91,7 @@ def get_drive_list(selected_devices=None) -> list:
                 }
             )
 
-    return drives
+    return sorted(drives, key=lambda entry: entry["name"])
 
 
 def get_zfs_volumes() -> list:
