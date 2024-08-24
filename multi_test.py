@@ -31,7 +31,6 @@ from rich.table import Table
 from prompt_toolkit import prompt
 from prompt_toolkit.key_binding import KeyBindings
 
-CMD_BLOCKDEV = "/usr/sbin/blockdev"
 CMD_LSBLK = "/usr/bin/lsblk"
 CMD_ZFS = "/usr/bin/zfs"
 DEBUG = False
@@ -41,6 +40,7 @@ DEVICE_LIST = []
 DEVICE_PROGRESS = Array("I", [])
 DEVICE_STATUS = Array("B", [])
 TASK_LIST = Array("I", [])
+WRITE_SIZE = 1024 * 1024  # The default number of bytes to use for reads and writes
 
 CURSOR_ROW = 0
 CURSOR_VISIBLE = True
@@ -123,7 +123,7 @@ def build_drive_list_panel(selected_row=0) -> Panel:
 def get_drive_list(selected_devices=None) -> list:
     try:
         lsblk_output = subprocess.check_output(
-            [CMD_LSBLK, "-o", "name,type,size,vendor,model", "-J"]
+            [CMD_LSBLK, "-dJo", "name,type,size,vendor,model"]
         ).strip()
     except subprocess.CalledProcessError:
         print("Couldn't run lsblk.  Aborting!")
@@ -278,7 +278,7 @@ def get_zfs_volumes() -> list:
 
 
 def test_disk(device):
-    global DEBUG, DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS
+    global DEBUG, DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS, WRITE_SIZE
 
     # Determine which DEVICE_LIST element number we've been passed
     list_element = 0
@@ -296,37 +296,21 @@ def test_disk(device):
 
     # Get the total size of the device
     try:
-        device_size = int(
-            subprocess.check_output([CMD_BLOCKDEV, "--getsize64", device]).strip()
-        )
+        json_output = subprocess.check_output([CMD_LSBLK, "-bdJo", "name,size", device])
+        device_size = rapidjson.loads(json_output)["blockdevices"][0]["size"]
     except subprocess.CalledProcessError:
-        print(f"Couldn't run blockdev on {device}.  Aborting!")
+        print(f"Couldn't run lsblk on {device}.  Aborting!")
         return False
     except Exception as e:
-        print("Something went wrong when trying to run blockdev")
+        print("Something went wrong when trying to run lsblk")
         print(e.with_traceback(None))
         return False
 
     if DEBUG:
         print(f"Total size of '{device}': {round(device_size / (1024 * 1024))} MB")
 
-    # Get block size to use for the transfers
-    try:
-        # 'blockdev --getss' gets logical block size, and 'blockdev --getpbsz' gets physical block size.  Not sure which
-        # one is better for this program, but lets start with physical and see how it goes
-        physical_block_size = int(
-            subprocess.check_output([CMD_BLOCKDEV, "--getpbsz", device]).strip()
-        )
-    except Exception as e:
-        print(e.with_traceback())
-        return False
-
-    if DEBUG:
-        print(f"Physical block size of device: {physical_block_size} bytes")
-
-    num_blocks_in_device = round(device_size / physical_block_size)
-
     # Open the device for read-write operations
+    num_blocks_in_device = round(device_size / WRITE_SIZE)
     try:
         # To add Windows support, apparently "os.O_BINARY" would need to be added
         device_handle = os.open(path=device, flags=os.O_DIRECT | os.O_RDWR)
@@ -350,7 +334,7 @@ def test_disk(device):
     ]:
         # Create a byte array of the character being tested
         test_array = bytearray()
-        for i in range(physical_block_size):
+        for i in range(WRITE_SIZE):
             test_array += test_byte
 
         # Write to the device
@@ -359,7 +343,6 @@ def test_disk(device):
             write_status = write_disk(
                 list_element,
                 file_handle,
-                physical_block_size,
                 num_blocks_in_device,
                 test_array,
                 test_byte,
@@ -379,7 +362,6 @@ def test_disk(device):
         verify_status = verify_disk(
             list_element,
             file_handle,
-            physical_block_size,
             num_blocks_in_device,
             test_array,
             test_byte,
@@ -432,12 +414,11 @@ def update_drive_selection():
 def verify_disk(
     list_element,
     file_to_be_read,
-    physical_block_size,
     num_blocks_in_device,
     comparison_array,
     expected_byte,
 ) -> bool:
-    global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS
+    global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS, WRITE_SIZE
     if expected_byte == bytearray.fromhex("aa"):
         DEVICE_STATUS[list_element] = 2
     elif expected_byte == bytearray.fromhex("55"):
@@ -452,7 +433,7 @@ def verify_disk(
     DEVICE_PROGRESS[list_element] = 0
 
     for block_number in range(num_blocks_in_device):
-        seek_position = block_number * physical_block_size
+        seek_position = block_number * WRITE_SIZE
 
         # Update the reported progress percentage
         if block_number % progress_counter_blocks == 0:
@@ -461,10 +442,10 @@ def verify_disk(
         # Read the test byte from disk
         m = mmap.mmap(
             fileno=file_to_be_read.fileno(),
-            length=physical_block_size,
+            length=WRITE_SIZE,
             offset=seek_position,
         )
-        read_buffer = m.read(physical_block_size)
+        read_buffer = m.read(WRITE_SIZE)
         if read_buffer != comparison_array:
             # TODO: Better reporting of verification failure(s)
             return False
@@ -475,12 +456,11 @@ def verify_disk(
 def write_disk(
     list_element,
     file_to_be_read,
-    physical_block_size,
     num_blocks_in_device,
     array_to_write,
     test_byte,
 ) -> bool:
-    global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS
+    global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS, WRITE_SIZE
     if test_byte == bytearray.fromhex("aa"):
         DEVICE_STATUS[list_element] = 1
     elif test_byte == bytearray.fromhex("55"):
@@ -496,7 +476,7 @@ def write_disk(
 
     try:
         for block_number in range(num_blocks_in_device):
-            seek_position = block_number * physical_block_size
+            seek_position = block_number * WRITE_SIZE
 
             # Update the reported progress percentage
             if block_number % progress_counter_blocks == 0:
@@ -505,7 +485,7 @@ def write_disk(
             # Write the test byte to disk
             m = mmap.mmap(
                 fileno=file_to_be_read.fileno(),
-                length=physical_block_size,
+                length=WRITE_SIZE,
                 offset=seek_position,
             )
             m.write(array_to_write)
