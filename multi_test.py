@@ -677,6 +677,8 @@ def main():
                 if maybe_finished is True:
                     finished = True
 
+    # TODO: Record useful results to disk
+
 
 if __name__ == "__main__":
     main()
