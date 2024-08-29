@@ -31,12 +31,16 @@ from rich.table import Table
 from prompt_toolkit import prompt
 from prompt_toolkit.key_binding import KeyBindings
 
+# SQLAlchemy
+import sqlalchemy
+
 CMD_LSBLK = "/usr/bin/lsblk"
 CMD_ZFS = "/usr/bin/zfs"
 DEBUG = False
 VERSION = "0.0.3"
 
 DEVICE_LIST = []
+DEVICE_BLOCK_NUM = Array("d", [])
 DEVICE_PROGRESS = Array("I", [])
 DEVICE_STATUS = Array("B", [])
 TASK_LIST = Array("I", [])
@@ -184,6 +188,12 @@ def get_drive_list(selected_devices=None) -> list:
     return sorted(drives, key=lambda entry: entry["name"])
 
 
+def database_flush():
+    while True:
+        print("Yep, flushing to the database")
+        time.sleep(1)
+
+
 def get_selected_devices() -> list:
     global drive_list
 
@@ -277,8 +287,14 @@ def get_zfs_volumes() -> list:
     return zfs_volumes
 
 
-def test_disk(device):
+def test_disk(device) -> bool:
     global DEBUG, DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS, WRITE_SIZE
+
+    if device == "sqlite_flush":
+        # This is a special background process that just flushes test progress to a SQLite database, and doesn't itself
+        # do any testing
+        database_flush()
+        return True
 
     # Determine which DEVICE_LIST element number we've been passed
     list_element = 0
@@ -460,7 +476,7 @@ def write_disk(
     array_to_write,
     test_byte,
 ) -> bool:
-    global DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS, WRITE_SIZE
+    global DEVICE_BLOCK_NUM,DEVICE_LIST, DEVICE_PROGRESS, DEVICE_STATUS, WRITE_SIZE
     if test_byte == bytearray.fromhex("aa"):
         DEVICE_STATUS[list_element] = 1
     elif test_byte == bytearray.fromhex("55"):
@@ -477,6 +493,10 @@ def write_disk(
     try:
         for block_number in range(num_blocks_in_device):
             seek_position = block_number * WRITE_SIZE
+
+            # Update the block number for the SQLite writing thread
+            if block_number % 100:
+                DEVICE_BLOCK_NUM[list_element] = block_number
 
             # Update the reported progress percentage
             if block_number % progress_counter_blocks == 0:
@@ -502,6 +522,7 @@ def main():
     global \
         CURSOR_ROW, \
         CURSOR_VISIBLE, \
+        DEVICE_BLOCK_NUM, \
         DEVICE_LIST, \
         DEVICE_PROGRESS, \
         DEVICE_STATUS, \
@@ -578,6 +599,7 @@ def main():
 
     # Size the progress information arrays appropriately
     num_drives = len(selected_devices)
+    DEVICE_BLOCK_NUM = Array("d", range(num_drives))
     DEVICE_PROGRESS = Array("I", range(num_drives))
     DEVICE_STATUS = Array("B", range(num_drives))
     TASK_LIST = Array("I", range(num_drives))
@@ -591,8 +613,14 @@ def main():
         )
         cnt += 1
 
+    # TODO: We need to launch a background task that flushes the disk write progress info to a SQLite database.
+    #       For now, it seems like adding a fake entry to the "device list" will get a background thread created that
+    #       can do what we want
+    DEVICE_LIST.append("sqlite_flush")
+
     # Launch the background drive read/verify tasks
     with Pool(processes=len(DEVICE_LIST)) as pool:
+        # Launch the background disk test processes
         pool.imap(test_disk, DEVICE_LIST)
 
         # This main process just reports the results until the tasks are finished
